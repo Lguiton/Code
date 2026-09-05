@@ -1,0 +1,6 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+pkill -f 'next dev.*3004' || true
+pkill -f 'next-server.*3004' || true
+pkill -f 'npm run dev.*3004' || true
+./run-frontend.sh

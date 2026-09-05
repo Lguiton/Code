@@ -1,0 +1,5 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+pkill -f 'uvicorn.*8000' || true
+pkill -f 'python.*uvicorn.*8000' || true
+./run-backend.sh

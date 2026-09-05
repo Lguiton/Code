@@ -1,0 +1,5 @@
+#!/bin/bash
+cd "$(dirname "$0")"
+./run-code1 &
+./run-code2 &
+wait
