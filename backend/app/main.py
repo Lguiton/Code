@@ -1,57 +1,134 @@
-from fastapi import FastAPI, APIRouter, File, UploadFile, Form, HTTPException, Depends
+import logging
+import time
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-from app.db.session import get_db, engine
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.api import auth, ingestion, reports
+from app.core.config import get_settings
 from app.db import models
-from app.services.vision_agent import evaluate_compliance_asset
-from app.api.dependencies import get_current_tenant
-import uuid
+from app.db.session import engine
 
-models.Base.metadata.create_all(bind=engine)
+logger = logging.getLogger(__name__)
 
-ingestion_router = APIRouter(prefix="/ingestion", tags=["Ingestion"])
 
-@ingestion_router.post("/upload")
-async def upload_compliance_log(
-    operator_id: str = Form(...),
-    log_type: str = Form(...),
-    photo: UploadFile = File(...),
-    tenant_id: str = Depends(get_current_tenant),
-    db: Session = Depends(get_db)
-):
-    try:
-        ai_eval = await evaluate_compliance_asset(photo, log_type)
-        
-        new_log = models.ComplianceLog(
-            tenant_id=tenant_id,
-            operator_id=operator_id,
-            log_type=log_type,
-            photo_storage_url=f"/s3-bucket/kitchens/{uuid.uuid4()}.jpg",
-            ai_confidence_score=ai_eval.get("confidence_score", 0.0),
-            extracted_volume_gallons=ai_eval.get("extracted_volume_gallons", 0.0),
-            structural_integrity_flag=ai_eval.get("structural_integrity_flag", True),
-            status=ai_eval.get("status", "FLAGGED"),
-            manager_notes=ai_eval.get("manager_notes", "")
-        )
-        
-        db.add(new_log)
-        db.commit()
-        db.refresh(new_log)
-        
-        return {"status": "success", "log_id": new_log.id}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=f"Transaction failed: {str(e)}")
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if get_settings().is_prod:
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=63072000; includeSubDomains"
+            )
+        return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """In-memory sliding-window rate limiter for expensive endpoints."""
+
+    def __init__(self, app, requests: int, window_seconds: int, paths: tuple):
+        super().__init__(app)
+        self.requests = requests
+        self.window = window_seconds
+        self.paths = paths
+        self.hits: dict[str, deque] = defaultdict(deque)
+
+    async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path in self.paths:
+            ip = request.client.host if request.client else "unknown"
+            now = time.monotonic()
+            dq = self.hits[ip]
+            while dq and dq[0] <= now - self.window:
+                dq.popleft()
+            if len(dq) >= self.requests:
+                return JSONResponse(
+                    status_code=429, content={"detail": "Too many requests, slow down."}
+                )
+            dq.append(now)
+            if len(self.hits) > 10_000:  # crude memory cap
+                self.hits.clear()
+        return await call_next(request)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    logging.basicConfig(
+        level=logging.INFO if settings.is_prod else logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+    if settings.AUTO_CREATE_TABLES:
+        if settings.is_prod:
+            logger.warning(
+                "AUTO_CREATE_TABLES is on in production — prefer migrations (Alembic)."
+            )
+        models.Base.metadata.create_all(bind=engine)
+        logger.info("Database tables ensured.")
+    yield
+
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Eivanta Code API")
-    app.add_middleware(
-        CORSMiddleware, allow_origins=["*"], 
-        allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
+    settings = get_settings()
+    app = FastAPI(
+        title="Eivanta Code API",
+        lifespan=lifespan,
+        # Interactive docs are a dev convenience; never expose them in prod.
+        docs_url=None if settings.is_prod else "/docs",
+        redoc_url=None if settings.is_prod else "/redoc",
+        openapi_url=None if settings.is_prod else "/openapi.json",
     )
+
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests=settings.RATE_LIMIT_REQUESTS,
+        window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+        paths=("/api/v1/ingestion/upload", "/api/v1/auth/pin-login"),
+    )
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts_list)
+    app.add_middleware(
+        CORSMiddleware,
+        # Explicit origins only. "*" + allow_credentials was rejected by
+        # browsers anyway and leaked the API to every website.
+        allow_origins=settings.cors_origins_list,
+        allow_credentials=True,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception_handler(request: Request, exc: Exception):
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+    @app.get("/api/v1/health", tags=["Health"])
+    def health():
+        return {"status": "ok", "environment": settings.ENVIRONMENT}
+
     api_router = APIRouter(prefix="/api/v1")
-    api_router.include_router(ingestion_router)
+    api_router.include_router(auth.router)
+    api_router.include_router(ingestion.router)
+    api_router.include_router(reports.router)
     app.include_router(api_router)
+
+    # Serve uploaded evidence photos (dev convenience). In production, put
+    # UPLOAD_DIR on object storage (S3/GCS) behind a CDN instead.
+    # The directory must exist at mount time (lifespan runs after mounting).
+    Path(settings.UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=settings.UPLOAD_DIR), name="uploads")
+
     return app
+
 
 app = create_app()

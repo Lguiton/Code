@@ -1,6 +1,6 @@
 from datetime import datetime
 import uuid
-from sqlalchemy import String, ForeignKey, DateTime, Float, Boolean, Text
+from sqlalchemy import String, ForeignKey, DateTime, Float, Boolean, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
@@ -8,13 +8,33 @@ class Base(DeclarativeBase):
 
 class Tenant(Base):
     __tablename__ = "tenants"
-    
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    
+
     # Relationship to logs
     logs = relationship("ComplianceLog", back_populates="tenant")
+    operators = relationship("Operator", back_populates="tenant")
+
+class Operator(Base):
+    """A kitchen worker who can log in with a quick-PIN and submit compliance logs.
+
+    PINs are never stored; only bcrypt hashes. operator_code is unique per tenant
+    (e.g. 'OP-4099') so kiosk tablets can identify workers with a short code.
+    """
+    __tablename__ = "operators"
+    __table_args__ = (UniqueConstraint("tenant_id", "operator_code", name="uq_operator_tenant_code"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), nullable=False, index=True)
+    operator_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    tenant = relationship("Tenant", back_populates="operators")
 
 class ComplianceLog(Base):
     __tablename__ = "compliance_logs"

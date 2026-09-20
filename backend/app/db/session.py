@@ -1,12 +1,20 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# We are bypassing the .env file and forcing it to look at port 5433
-DATABASE_URL = "postgresql://postgres:postgres@127.0.0.1:5433/postgres"
+from app.core.config import get_settings
 
-engine = create_engine(DATABASE_URL)
+settings = get_settings()
+
+# SQLite (used in tests / local quickstart) needs check_same_thread=False.
+connect_args = {"check_same_thread": False} if settings.DATABASE_URL.startswith("sqlite") else {}
+
+engine = create_engine(
+    settings.DATABASE_URL,
+    connect_args=connect_args,
+    pool_pre_ping=True,  # drop stale pooled connections before use
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
 
 def get_db():
     db = SessionLocal()

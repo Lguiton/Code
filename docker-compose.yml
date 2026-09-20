@@ -1,0 +1,33 @@
+# Local production-like stack: Postgres + API.
+# 1. cp backend/.env.example backend/.env  (fill in JWT_SECRET etc.)
+# 2. docker compose up --build
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: eivanta
+      POSTGRES_PASSWORD: eivanta-dev-only
+      POSTGRES_DB: eivanta
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+
+  api:
+    build: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://eivanta:eivanta-dev-only@db:5432/eivanta
+      AUTO_CREATE_TABLES: "true"
+    ports:
+      - "8000:8000"
+    depends_on:
+      - db
+    volumes:
+      # Persist uploaded evidence photos on the host (dev convenience).
+      # In real production, use object storage instead.
+      - ./backend/uploads:/srv/app/uploads
+
+volumes:
+  pgdata:

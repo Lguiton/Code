@@ -1,1 +1,29 @@
+# Secrets & local config — never commit
+.env
+.env.local
 backend/.env
+frontend/.env.local
+
+# Uploaded evidence photos
+backend/uploads/
+uploads/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+dist/
+
+# Misc
+.DS_Store
+*.log
+test.db
