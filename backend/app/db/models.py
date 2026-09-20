@@ -53,5 +53,8 @@ class ComplianceLog(Base):
     structural_integrity_flag: Mapped[bool] = mapped_column(Boolean, default=True)
     status: Mapped[str] = mapped_column(String(20), default="PENDING") # VERIFIED, FLAGGED, OVERRIDDEN
     manager_notes: Mapped[str] = mapped_column(Text, nullable=True)
+    # Manager review audit trail: who cleared/overrode the AI verdict, and when.
+    reviewed_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     tenant = relationship("Tenant", back_populates="logs")

@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.api import auth, ingestion, reports
+from app.api import auth, ingestion, reports, review
 from app.core.config import get_settings
 from app.db import models
 from app.db.session import engine
@@ -120,6 +120,7 @@ def create_app() -> FastAPI:
     api_router.include_router(auth.router)
     api_router.include_router(ingestion.router)
     api_router.include_router(reports.router)
+    api_router.include_router(review.router)
     app.include_router(api_router)
 
     # Serve uploaded evidence photos (dev convenience). In production, put

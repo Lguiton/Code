@@ -55,25 +55,41 @@ before serving real customer data.
 
 **Ops**
 - `Dockerfile` + `docker-compose.yml` (Postgres 16 + API) for reproducible deploys.
-- Table auto-creation moved out of import time into lifespan startup, gated by
-  `AUTO_CREATE_TABLES` (warns in prod).
+- **Alembic migrations** (`backend/alembic/`) — the Docker image runs
+  `alembic upgrade head` before starting uvicorn, and `AUTO_CREATE_TABLES`
+  is off in compose. New schema changes go in
+  `backend/alembic/versions/` (see `0001_baseline`,
+  `0002_log_review_columns`). Existing dev databases created by
+  `create_all` can be stamped instead of rebuilt:
+  `alembic stamp 0001_baseline`.
+
+**Manager review workflow**
+- `GET /api/v1/review/queue` — tenant-scoped, newest-first list of
+  `FLAGGED`/`PENDING` logs with submitter info and AI scores.
+- `POST /api/v1/review/{log_id}/decision` — `{"decision": "approve"}`
+  marks the log `VERIFIED`; `{"decision": "override", "manager_notes"}`
+  marks it `OVERRIDDEN` (notes required). Every decision stamps
+  `reviewed_by`/`reviewed_at` for the audit trail. Cross-tenant ids return
+  404 (no existence leak); re-reviewing returns 409.
+- `GET /api/v1/reports/summary` — tenant-scoped dashboard aggregates
+  (totals, verification rate, volume, per-log-type breakdown, recent logs).
+- `GET /api/v1/reports/monthly.pdf` — audit-ready monthly PDF (per-type
+  table, items needing review, full log listing) for health inspectors.
 
 ## Still to do before real production traffic
 
-1. **Database migrations** — replace `AUTO_CREATE_TABLES` with Alembic
-   migrations so schema changes are reviewable and reversible.
-2. **Object storage** — serve `/uploads` from S3/GCS behind a CDN with signed
+1. **Object storage** — serve `/uploads` from S3/GCS behind a CDN with signed
    URLs instead of local disk on the API host.
-3. **Stronger auth** — consider short-lived access tokens + refresh tokens, and
+2. **Stronger auth** — consider short-lived access tokens + refresh tokens, and
    step-up approval for manager overrides. PINs are kiosk-appropriate but weak;
    enforce lockout/backoff per operator if tablets are shared.
-4. **TLS everywhere** — terminate TLS at the load balancer / reverse proxy;
+3. **TLS everywhere** — terminate TLS at the load balancer / reverse proxy;
    HSTS is only emitted when `ENVIRONMENT=prod`.
-5. **Observability** — structured log shipping, error tracking (e.g. Sentry),
+4. **Observability** — structured log shipping, error tracking (e.g. Sentry),
    and metrics for upload latency / AI failure rate.
-6. **Backups & DR** — automated Postgres backups and a tested restore runbook.
-7. **Dependency scanning** — run `pip-audit` / Dependabot on both
+5. **Backups & DR** — automated Postgres backups and a tested restore runbook.
+6. **Dependency scanning** — run `pip-audit` / Dependabot on both
    `requirements.txt` and `package-lock.json` in CI.
-8. **Secrets management** — move `JWT_SECRET`/`GEMINI_API_KEY` into a real
+7. **Secrets management** — move `JWT_SECRET`/`GEMINI_API_KEY` into a real
    secret manager (AWS Secrets Manager, Doppler, etc.) instead of `.env` files
    on disk.

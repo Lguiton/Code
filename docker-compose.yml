@@ -18,8 +18,10 @@ services:
     env_file:
       - ./backend/.env
     environment:
+      # Schema is managed by Alembic (the image runs `alembic upgrade head`
+      # before starting uvicorn), so table auto-creation stays off here.
       DATABASE_URL: postgresql://eivanta:eivanta-dev-only@db:5432/eivanta
-      AUTO_CREATE_TABLES: "true"
+      AUTO_CREATE_TABLES: "false"
     ports:
       - "8000:8000"
     depends_on:
